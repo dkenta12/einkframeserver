@@ -1,0 +1,36 @@
+# Runs on Mark's server.
+#
+# One-time setup:
+#   1. Install Docker (docs.docker.com/engine/install) if not already present.
+#   2. Copy this repo's .env.example to .env and fill in:
+#        TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN  (from console.twilio.com)
+#        TUNNEL_TOKEN                           (from the Cloudflare Zero Trust
+#                                                 dashboard — see below)
+#   3. In the Cloudflare Zero Trust dashboard (one.dash.cloudflare.com):
+#        Networks -> Tunnels -> Create a tunnel -> Docker
+#        Name it, copy the token it gives you into TUNNEL_TOKEN in .env
+#        Add a Public Hostname: kenta.markmckessok.com -> http://app:5000
+#        (requires markmckessok.com's DNS to be managed by Cloudflare)
+#   4. docker compose up -d
+#
+# To update after a new image is published to GHCR:
+#   docker compose pull && docker compose up -d
+
+services:
+  app:
+    image: ghcr.io/dkenta12/einkframeserver:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./received_images:/app/received_images
+    expose:
+      - "5000"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - app
