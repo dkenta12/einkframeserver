@@ -1,17 +1,19 @@
 """
 Twilio SMS webhook receiver.
 
-Run locally, expose with Cloudflare Tunnel (see tunnel.sh), then point your
-Twilio phone number's "Inbound webhook" to: https://YOUR-TUNNEL-URL/sms
+Run locally, expose with a Cloudflare Tunnel, then point your Twilio phone
+number's "Inbound webhook" to: https://YOUR-TUNNEL-URL/sms
 """
 
 import os
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, request, send_file
+from flask import Flask, abort, request, send_file
+from twilio.request_validator import RequestValidator
 
 load_dotenv()
 
@@ -19,6 +21,13 @@ app = Flask(__name__)
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
+
+# The public URL Twilio POSTs to. The signature is computed over it, so it must match
+# character for character -- behind a proxy or tunnel request.url is the internal URL
+# and would never verify. Falls back to request.url for local dev.
+TWILIO_WEBHOOK_URL = os.environ.get("TWILIO_WEBHOOK_URL", "")
+
+_validator = RequestValidator(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else None
 
 IMAGES_DIR = Path(__file__).parent / "received_images"
 IMAGES_DIR.mkdir(exist_ok=True)
@@ -29,6 +38,10 @@ LATEST_IMAGE = IMAGES_DIR / "latest.jpg"
 
 @app.route("/sms", methods=["POST"])
 def sms_webhook():
+    if not _signature_ok():
+        print("Rejected request with missing or invalid X-Twilio-Signature", flush=True)
+        abort(403)
+
     body = request.form.get("Body", "")
     from_number = request.form.get("From", "unknown")
     to_number = request.form.get("To", "unknown")
@@ -59,15 +72,40 @@ def sms_webhook():
     )
 
 
+def _signature_ok():
+    if _validator is None:
+        # No auth token configured. Refuse rather than silently accept anything —
+        # this endpoint is internet-facing.
+        return False
+    url = TWILIO_WEBHOOK_URL or request.url
+    signature = request.headers.get("X-Twilio-Signature", "")
+    return _validator.validate(url, request.form.to_dict(), signature)
+
+
+def _is_twilio_media_url(url):
+    # Media is fetched with the account SID and auth token as HTTP basic auth, so a
+    # MediaUrl pointing anywhere else would hand those credentials to whoever asked.
+    parts = urlparse(url)
+    if parts.scheme != "https":
+        return False
+    host = (parts.hostname or "").lower()
+    return host == "twilio.com" or host.endswith(".twilio.com")
+
+
 def _save_media(media_url, content_type, index):
     if not media_url:
+        return None
+    if not _is_twilio_media_url(media_url):
+        print(f"Refusing to fetch non-Twilio media URL: {media_url}", flush=True)
         return None
     ext = content_type.split("/")[-1] if "/" in content_type else "bin"
     filename = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{index}.{ext}"
     dest = IMAGES_DIR / filename
 
     # Twilio media URLs require HTTP Basic Auth with your Account SID + Auth Token
-    resp = requests.get(media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+    resp = requests.get(
+        media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=30
+    )
     resp.raise_for_status()
     dest.write_bytes(resp.content)
     LATEST_IMAGE.write_bytes(resp.content)
