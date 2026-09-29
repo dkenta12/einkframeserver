@@ -7,6 +7,7 @@ number's "Inbound webhook" to: https://YOUR-TUNNEL-URL/sms
 
 import os
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -22,12 +23,21 @@ app = Flask(__name__)
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 
-# The public URL Twilio POSTs to. The signature is computed over it, so it must match
-# character for character -- behind a proxy or tunnel request.url is the internal URL
-# and would never verify. Falls back to request.url for local dev.
-TWILIO_WEBHOOK_URL = os.environ.get("TWILIO_WEBHOOK_URL", "")
+_validator = RequestValidator(TWILIO_AUTH_TOKEN)
 
-_validator = RequestValidator(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else None
+
+def require_twilio_signature(f):
+    # Cloudflare always terminates TLS, so the public URL Twilio signed is
+    # https even though Flask sees plain http from cloudflared internally.
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        url = request.url.rstrip("?").replace("http://", "https://", 1)
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not _validator.validate(url, request.form.to_dict(), signature):
+            abort(403)
+        return f(*args, **kwargs)
+
+    return wrapper
 
 IMAGES_DIR = Path(__file__).parent / "received_images"
 IMAGES_DIR.mkdir(exist_ok=True)
@@ -37,6 +47,7 @@ LATEST_IMAGE = IMAGES_DIR / "latest.jpg"
 
 
 @app.route("/sms", methods=["POST"])
+@require_twilio_signature
 def sms_webhook():
     if not _signature_ok():
         print("Rejected request with missing or invalid X-Twilio-Signature", flush=True)
