@@ -31,6 +31,11 @@ def require_twilio_signature(f):
     # https even though Flask sees plain http from cloudflared internally.
     @wraps(f)
     def wrapper(*args, **kwargs):
+        if not TWILIO_AUTH_TOKEN:
+            # Without a token the validator signs with an empty key, which anyone
+            # can reproduce. Refuse rather than silently accept anything --
+            # this endpoint is internet-facing.
+            abort(403)
         url = request.url.rstrip("?").replace("http://", "https://", 1)
         signature = request.headers.get("X-Twilio-Signature", "")
         if not _validator.validate(url, request.form.to_dict(), signature):
@@ -38,6 +43,7 @@ def require_twilio_signature(f):
         return f(*args, **kwargs)
 
     return wrapper
+
 
 IMAGES_DIR = Path(__file__).parent / "received_images"
 IMAGES_DIR.mkdir(exist_ok=True)
@@ -49,10 +55,6 @@ LATEST_IMAGE = IMAGES_DIR / "latest.jpg"
 @app.route("/sms", methods=["POST"])
 @require_twilio_signature
 def sms_webhook():
-    if not _signature_ok():
-        print("Rejected request with missing or invalid X-Twilio-Signature", flush=True)
-        abort(403)
-
     body = request.form.get("Body", "")
     from_number = request.form.get("From", "unknown")
     to_number = request.form.get("To", "unknown")
@@ -81,16 +83,6 @@ def sms_webhook():
         200,
         {"Content-Type": "text/xml"},
     )
-
-
-def _signature_ok():
-    if _validator is None:
-        # No auth token configured. Refuse rather than silently accept anything —
-        # this endpoint is internet-facing.
-        return False
-    url = TWILIO_WEBHOOK_URL or request.url
-    signature = request.headers.get("X-Twilio-Signature", "")
-    return _validator.validate(url, request.form.to_dict(), signature)
 
 
 def _is_twilio_media_url(url):

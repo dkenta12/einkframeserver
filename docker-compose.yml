@@ -4,9 +4,6 @@
 #   1. Install Docker (docs.docker.com/engine/install) if not already present.
 #   2. Copy this repo's .env.example to .env and fill in:
 #        TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN  (from console.twilio.com)
-#        TWILIO_WEBHOOK_URL                     (the public https URL from step 3,
-#                                                 with /sms on the end -- required,
-#                                                 requests are rejected without it)
 #        TUNNEL_TOKEN                           (from the Cloudflare Zero Trust
 #                                                 dashboard — see below)
 #   3. In the Cloudflare Zero Trust dashboard (one.dash.cloudflare.com):
